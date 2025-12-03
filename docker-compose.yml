@@ -14,7 +14,8 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.geoia-api.rule=Host(`api.geoia.codeauni.com`)"
       - "traefik.http.routers.geoia-api.entrypoints=websecure"
-      - "traefik.http.routers.geoia-api.tls.certresolver=letsencrypt"
+      # - "traefik.http.routers.geoia-api.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.geoia-api.tls.certresolver=mytlschallenge"
       - "traefik.http.services.geoia-api.loadbalancer.server.port=8000"
 
   mongo:
