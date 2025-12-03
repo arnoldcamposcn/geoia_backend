@@ -2,24 +2,34 @@ from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from bson import ObjectId
 import pandas as pd
 import os
+from dotenv import load_dotenv
 
 from backend.corelab.drilldata import DrillData
 from backend.corelab.engine import CoreLabEngine
 from backend.auth import router as auth_router, get_current_user, UserPublic
 from backend.database import db
 
+load_dotenv()
+
 app = FastAPI(title="CoreLab 3D API")
 
 # Rutas de autenticación
 app.include_router(auth_router)
 
+# Configurar CORS con variables de entorno
+allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "*")
+if allowed_origins_env != "*":
+    allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",")]
+else:
+    allowed_origins = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -247,7 +257,7 @@ async def upload_files(
     project_doc: Dict[str, Any] = {
         "user_id": ObjectId(current_user.id),
         "nombre_proyecto": nombre_proyecto,
-        "created_at": datetime.utcnow(),
+        "created_at": datetime.now(timezone.utc),
         "files": files_state,
         "columns": detected,
         "drillholes": drillholes,
@@ -508,7 +518,7 @@ def generate_composites(req: CompositeRequest, project_id: str):
             "$set": {
                 "composites": state["composites"],
                 "composite_settings": state["composite_settings"],
-                "updated_at": datetime.utcnow(),
+                "updated_at": datetime.now(timezone.utc),
             }
         },
     )
@@ -652,7 +662,7 @@ def generate_block_model(req: BlockModelRequest, project_id: str):
             "$set": {
                 "block_model": state["block_model"],
                 "block_settings": state["block_settings"],
-                "updated_at": datetime.utcnow(),
+                "updated_at": datetime.now(timezone.utc),
             }
         },
     )
@@ -1003,7 +1013,7 @@ async def update_project(
 
     # Actualizar MongoDB
     update_doc = {
-        "updated_at": datetime.utcnow(),
+        "updated_at": datetime.now(timezone.utc),
     }
 
     if nombre_proyecto is not None:

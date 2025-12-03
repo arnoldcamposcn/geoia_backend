@@ -2,7 +2,7 @@ version: "3.9"
 
 services:
   api:
-    image: ghcr.io/TU_USUARIO/geoia-backend:latest
+    image: ghcr.io/arnoldcamposcn/geoia-backend:latest
     container_name: geoia_backend
     restart: always
     env_file: .env
@@ -12,7 +12,7 @@ services:
       - mongo
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.geoia-api.rule=Host(`api.geoia.tudominio.com`)"
+      - "traefik.http.routers.geoia-api.rule=Host(`api.geoia.codeauni.com`)"
       - "traefik.http.routers.geoia-api.entrypoints=websecure"
       - "traefik.http.routers.geoia-api.tls.certresolver=letsencrypt"
       - "traefik.http.services.geoia-api.loadbalancer.server.port=8000"

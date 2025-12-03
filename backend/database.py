@@ -1,11 +1,24 @@
 # backend/database.py
 
 from pymongo import MongoClient, ASCENDING
+import os
+from dotenv import load_dotenv
+from urllib.parse import urlparse
 
-MONGO_URL = "mongodb://localhost:27017"
-DB_NAME = "codeaprediccion"
+load_dotenv()
 
-client = MongoClient(MONGO_URL)
+# Obtener URI de MongoDB desde variables de entorno
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017/codeaprediccion")
+
+# Extraer nombre de base de datos de la URI si está presente
+parsed_uri = urlparse(MONGODB_URI)
+if parsed_uri.path and parsed_uri.path.strip("/"):
+    DB_NAME = parsed_uri.path.strip("/")
+else:
+    DB_NAME = os.getenv("MONGO_DB_NAME", "codeaprediccion")
+
+# Conectar a MongoDB (MongoClient maneja automáticamente la URI completa)
+client = MongoClient(MONGODB_URI)
 db = client[DB_NAME]
 
 # Colecciones

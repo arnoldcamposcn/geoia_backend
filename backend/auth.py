@@ -1,6 +1,8 @@
 # backend/auth.py
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+import os
+from dotenv import load_dotenv
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -10,10 +12,12 @@ from passlib.context import CryptContext
 
 from .database import users  # colección de Mongo
 
+load_dotenv()
+
 # ===== CONFIGURACIÓN JWT =====
-SECRET_KEY = "cambia_esto_por_un_secret_largo_y_secreto"
+SECRET_KEY = os.getenv("SECRET_KEY", "cambia_esto_por_un_secret_largo_y_secreto")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60")) 
 
 # ===== PASSWORD HASH =====
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -59,7 +63,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 # ===== UTILS =====
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
@@ -123,7 +127,7 @@ def register(user_in: UserCreate):
         "email": user_in.email,
         "hashed_password": get_password_hash(user_in.password),
         "nombre_empresa": user_in.nombre_empresa,
-        "created_at": datetime.utcnow(),
+        "created_at": datetime.now(timezone.utc),
     }
     result = users.insert_one(doc)
     return UserPublic(
@@ -159,5 +163,5 @@ def get_profile(current_user: UserPublic = Depends(get_current_user)):
     
     return UserProfile(
         nombre_empresa=user.get("nombre_empresa", ""),
-        created_at=user.get("created_at", datetime.utcnow())
+        created_at=user.get("created_at", datetime.now(timezone.utc))
     )
