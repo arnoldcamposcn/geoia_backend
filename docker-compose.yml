@@ -1,4 +1,4 @@
-version: "3.9"
+ersion: "3.9"
 
 services:
   api:
@@ -12,11 +12,14 @@ services:
       - mongo
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.geoia-api.rule=Host(`api.geoia.codeauni.com`)"
+      # La regla enruta todo lo que empieza por /api
+      - "traefik.http.routers.geoia-api.rule=Host(`geoia.codeauni.com`) && PathPrefix(`/api`)"
       - "traefik.http.routers.geoia-api.entrypoints=websecure"
-      # - "traefik.http.routers.geoia-api.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.geoia-api.tls=true"
       - "traefik.http.routers.geoia-api.tls.certresolver=mytlschallenge"
       - "traefik.http.services.geoia-api.loadbalancer.server.port=8000"
+
+      # *** SE ELIMINARON las líneas de strip-api, ya que FastAPI usa root_path="/api" ***
 
   mongo:
     image: mongo:6

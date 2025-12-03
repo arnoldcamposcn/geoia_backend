@@ -15,7 +15,15 @@ from backend.database import db
 
 load_dotenv()
 
-app = FastAPI(title="CoreLab 3D API")
+# app = FastAPI(title="CoreLab 3D API")
+app = FastAPI(
+    title="GeoIA API",
+    version="1.0.0",
+    root_path="/api",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json"
+)
 
 # Rutas de autenticación
 app.include_router(auth_router)
