@@ -2,6 +2,7 @@ ersion: "3.9"
 
 services:
   api:
+    build: .
     container_name: geoia_backend
     restart: always
     env_file: .env
@@ -11,11 +12,24 @@ services:
       - mongo
     labels:
       - "traefik.enable=true"
+
+      # Router con prefijo /api
       - "traefik.http.routers.geoia-api.rule=Host(`geoia.codeauni.com`) && PathPrefix(`/api`)"
       - "traefik.http.routers.geoia-api.entrypoints=websecure"
       - "traefik.http.routers.geoia-api.tls=true"
       - "traefik.http.routers.geoia-api.tls.certresolver=mytlschallenge"
+
+      # Middleware para decirle a FastAPI que el prefijo real es /api
+      - "traefik.http.middlewares.geoia-prefix.headers.customrequestheaders.X-Forwarded-Prefix=/api"
+
+      # Solo usamos este middleware (sin stripPrefix, sin CORS Traefik)
+      - "traefik.http.routers.geoia-api.middlewares=geoia-prefix"
+
+      # Puerto interno
       - "traefik.http.services.geoia-api.loadbalancer.server.port=8000"
+
+      # Red de Traefik
+      - "traefik.docker.network=proxy"
 
   mongo:
     image: mongo:6
@@ -31,6 +45,3 @@ services:
 networks:
   proxy:
     external: true
-
-volumes:
-  mongo_data:

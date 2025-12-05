@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from bson import ObjectId
 import pandas as pd
 import os
+import json
 from dotenv import load_dotenv
 
 from backend.corelab.drilldata import DrillData
@@ -81,219 +82,379 @@ def get_user_folder(user_id: str) -> str:
 
 
 # =======================================================
-# 1) SUBIR ARCHIVOS + OBTENER CABECERAS (CON AUTENTICACIÓN)
-#    Crea SIEMPRE un proyecto nuevo
+# SCHEMAS PARA MAPEO DE COLUMNAS
 # =======================================================
-@app.post("/upload-files")
-async def upload_files(
-    collar: UploadFile = File(...),
-    survey: UploadFile = File(...),
-    lith: UploadFile = File(...),
-    assay: UploadFile = File(...),
-    dxf: UploadFile | None = File(None),
-    nombre_proyecto: str = Form(...),
+class CollarMap(BaseModel):
+    ID: str
+    X: str
+    Y: str
+    Z: str
+
+
+class SurveyMap(BaseModel):
+    ID: str
+    AT: str
+    AZ: str
+    DIP: str
+
+
+class TableMap(BaseModel):
+    ID: str
+    FROM: str
+    TO: str
+
+
+class AssayMap(BaseModel):
+    """
+    Mapeo de columnas requeridas para Assay.
+    Solo ID, FROM y TO son requeridos. El resto de columnas del archivo Assay
+    son opcionales y se preservarán automáticamente.
+    """
+    ID: str
+    FROM: str
+    TO: str
+
+
+class ColumnSelection(BaseModel):
+    collar: CollarMap
+    survey: SurveyMap
+    table: TableMap
+    assay: AssayMap
+
+
+# =======================================================
+# 7) Post de columnas por el user.... 
+# =======================================================
+
+@app.post("/map-columns")
+def map_columns(
+    selection: ColumnSelection,
     current_user: UserPublic = Depends(get_current_user),
 ):
-    # Carpeta por usuario (para guardar CSVs físicos)
-    user_folder = get_user_folder(current_user.id)
-
-    # Paths CSV
-    collar_path = os.path.join(user_folder, "collar_raw.csv")
-    survey_path = os.path.join(user_folder, "survey_raw.csv")
-    lith_path = os.path.join(user_folder, "lith_raw.csv")
-    assay_path = os.path.join(user_folder, "assay_raw.csv")
-
-    # Guardar archivos originales CSV
-    with open(collar_path, "wb") as f:
-        f.write(await collar.read())
-    with open(survey_path, "wb") as f:
-        f.write(await survey.read())
-    with open(lith_path, "wb") as f:
-        f.write(await lith.read())
-    with open(assay_path, "wb") as f:
-        f.write(await assay.read())
-
-    # ------------------------------------
-    #   Guardar DXF si viene
-    # ------------------------------------
-    dxf_path = None
-    surface_points = None
-    dxf_status = None
-
-    if dxf is not None:
-        dxf_path = os.path.join(user_folder, "surface.dxf")
-        with open(dxf_path, "wb") as f:
-            f.write(await dxf.read())
-
-        engine = CoreLabEngine()
-        surface_points = engine.load_dxf_surface(dxf_path)
-
-        dxf_status = {
-            "ok": True,
-            "points": len(surface_points),
-            "message": "DXF cargado y procesado correctamente.",
+    """
+    Mapea las columnas personalizadas del usuario a los nombres estándar del backend.
+    
+    El usuario puede tener archivos con nombres de columnas diferentes a los esperados.
+    Este endpoint permite mapear las columnas del usuario a los nombres estándar.
+    
+    IMPORTANTE: Este endpoint requiere que primero se hayan cargado los archivos con /upload-files.
+    El nombre_proyecto se obtiene automáticamente de la sesión anterior.
+    
+    Ejemplo:
+        Usuario tiene: BHID, Location X, Location Y, Location Z
+        Backend espera: ID, X, Y, Z
+        Mapeo: {"ID": "BHID", "X": "Location X", "Y": "Location Y", "Z": "Location Z"}
+        
+    El sistema internamente convertirá:
+        - BHID → ID
+        - Location X → X
+        - Location Y → Y
+        - Location Z → Z
+    
+    Args:
+        selection: Objeto con los mapeos de columnas para Collar, Survey, Table, Assay
+                  (nombre_proyecto se obtiene automáticamente de /upload-files)
+        current_user: Usuario autenticado
+    
+    Returns:
+        Dict con el project_id creado y información del mapeo
+    """
+    # Obtener carpeta del usuario donde están los archivos
+    carpeta_usuario = get_user_folder(current_user.id)
+    
+    # Leer nombre_proyecto guardado en /upload-files
+    proyecto_info_path = os.path.join(carpeta_usuario, "proyecto_info.json")
+    if not os.path.exists(proyecto_info_path):
+        return {
+            "ok": False,
+            "error": "No se encontró información del proyecto. Primero carga los archivos con /upload-files."
         }
-    else:
-        engine = CoreLabEngine()
+    
+    with open(proyecto_info_path, "r", encoding="utf-8") as f:
+        proyecto_info = json.load(f)
+        nombre_proyecto = proyecto_info.get("nombre_proyecto")
+    
+    if not nombre_proyecto:
+        return {
+            "ok": False,
+            "error": "No se encontró nombre_proyecto. Primero carga los archivos con /upload-files."
+        }
+    
+    # Paths de los archivos cargados previamente
+    collar_path = os.path.join(carpeta_usuario, "collar.csv")
+    survey_path = os.path.join(carpeta_usuario, "survey.csv")
+    table_path = os.path.join(carpeta_usuario, "table.csv")
+    assay_path = os.path.join(carpeta_usuario, "assay.csv")
+    
+    # Validar que los archivos existan
+    archivos_faltantes = []
+    if not os.path.exists(collar_path):
+        archivos_faltantes.append("collar.csv")
+    if not os.path.exists(survey_path):
+        archivos_faltantes.append("survey.csv")
+    if not os.path.exists(table_path):
+        archivos_faltantes.append("table.csv")
+    if not os.path.exists(assay_path):
+        archivos_faltantes.append("assay.csv")
+    
+    if archivos_faltantes:
+        return {
+            "ok": False,
+            "error": f"Faltan archivos. Primero carga los archivos con /upload-files. Archivos faltantes: {', '.join(archivos_faltantes)}"
+        }
 
-    # Leer headers CSV
-    collar_df = pd.read_csv(collar_path)
-    survey_df = pd.read_csv(survey_path)
-    lith_df = pd.read_csv(lith_path)
-    assay_df = pd.read_csv(assay_path)
+    # Leer headers para validar
+    collar_df = pd.read_csv(collar_path, nrows=0)
+    survey_df = pd.read_csv(survey_path, nrows=0)
+    table_df = pd.read_csv(table_path, nrows=0)
+    assay_df = pd.read_csv(assay_path, nrows=0)
 
-    # ============================================
-    # 1) DETECCIÓN DE MAPEOS AUTOMÁTICOS
-    # ============================================
-    def find(col_list, expected):
-        for e in expected:
-            for c in col_list:
-                if e.lower() == c.lower():
-                    return c
+    errors = {}
+
+    def validate(name: str, chosen_map, df_columns):
+        chosen = list(chosen_map.model_dump().values())
+        if len(set(chosen)) != len(chosen):
+            return f"{name}: columnas repetidas."
+        for col in chosen:
+            if col not in df_columns:
+                return f"{name}: columna '{col}' no existe."
         return None
 
-    detected = {
-        "collar": {
-            "ID": find(collar_df.columns, ["ID", "BHID", "HOLEID"]),
-            "X": find(collar_df.columns, ["X", "XCOLLAR", "EASTING"]),
-            "Y": find(collar_df.columns, ["Y", "YCOLLAR", "NORTHING"]),
-            "Z": find(collar_df.columns, ["Z", "ZCOLLAR", "RL", "ELEV"]),
-        },
-        "survey": {
-            "ID": find(survey_df.columns, ["ID", "BHID", "HOLEID"]),
-            "AT": find(survey_df.columns, ["AT", "DEPTH"]),
-            "AZ": find(survey_df.columns, ["AZ", "AZIMUTH", "BRG"]),
-            "DIP": find(survey_df.columns, ["DIP", "INCLINATION"]),
-        },
-        "lith": {
-            "ID": find(lith_df.columns, ["ID", "BHID", "HOLEID"]),
-            "FROM": find(lith_df.columns, ["FROM", "FROM_DEPTH"]),
-            "TO": find(lith_df.columns, ["TO", "TO_DEPTH"]),
-            "ROCK": find(lith_df.columns, ["ROCK", "LITH", "LITHOLOGY"]),
-        },
-        "assay": {
-            "ID": find(assay_df.columns, ["ID", "BHID", "HOLEID"]),
-            "FROM": find(assay_df.columns, ["FROM", "FROM_DEPTH"]),
-            "TO": find(assay_df.columns, ["TO", "TO_DEPTH"]),
-        },
-    }
+    if (err := validate("COLLAR", selection.collar, collar_df.columns)):
+        errors["collar"] = err
+    if (err := validate("SURVEY", selection.survey, survey_df.columns)):
+        errors["survey"] = err
+    if (err := validate("TABLE", selection.table, table_df.columns)):
+        errors["table"] = err
+    if (err := validate("ASSAY", selection.assay, assay_df.columns)):
+        errors["assay"] = err
 
-    # ============================================
-    # 2) RENOMBRAR A FORMATO ESTÁNDAR
-    # ============================================
-    collar_std = collar_df.rename(
-        columns={
-            detected["collar"]["ID"]: "ID",
-            detected["collar"]["X"]: "X",
-            detected["collar"]["Y"]: "Y",
-            detected["collar"]["Z"]: "Z",
-        }
-    )
-    collar_std_path = os.path.join(user_folder, "collar_std.csv")
-    collar_std.to_csv(collar_std_path, index=False)
+    if errors:
+        return {"ok": False, "errors": errors}
 
-    survey_std = survey_df.rename(
-        columns={
-            detected["survey"]["ID"]: "ID",
-            detected["survey"]["AT"]: "AT",
-            detected["survey"]["AZ"]: "AZ",
-            detected["survey"]["DIP"]: "DIP",
-        }
-    )
-    survey_std_path = os.path.join(user_folder, "survey_std.csv")
-    survey_std.to_csv(survey_std_path, index=False)
+    # Mapeos: convertir de formato del usuario a formato estándar
+    # Ejemplo: {"ID": "BHID", "X": "Location X"} significa:
+    #   - La columna "BHID" del CSV se mapea a "ID" (estándar)
+    #   - La columna "Location X" del CSV se mapea a "X" (estándar)
+    collar_map = selection.collar.model_dump()
+    survey_map = selection.survey.model_dump()
+    table_map = selection.table.model_dump()
+    assay_map = selection.assay.model_dump()
 
-    lith_std = lith_df.rename(
-        columns={
-            detected["lith"]["ID"]: "ID",
-            detected["lith"]["FROM"]: "FROM",
-            detected["lith"]["TO"]: "TO",
-            detected["lith"]["ROCK"]: "ROCK",
-        }
-    )
-    lith_std_path = os.path.join(user_folder, "lith_std.csv")
-    lith_std.to_csv(lith_std_path, index=False)
+    engine = CoreLabEngine()
 
-    assay_std = assay_df.rename(
-        columns={
-            detected["assay"]["ID"]: "ID",
-            detected["assay"]["FROM"]: "FROM",
-            detected["assay"]["TO"]: "TO",
-        }
-    )
-    assay_std_path = os.path.join(user_folder, "assay_std.csv")
-    assay_std.to_csv(assay_std_path, index=False)
-
-    # ============================================
-    # 3) Construir Drillholes
-    # ============================================
+    # Modelo clásico
+    # DrillData internamente invierte el mapeo y renombra las columnas:
+    #   {"ID": "BHID"} → {"BHID": "ID"} → renombra "BHID" a "ID"
     drilldata = DrillData(
-        collar_file=collar_std_path,
-        survey_file=survey_std_path,
-        lith_file=lith_std_path,
-        collar_map={"ID": "ID", "X": "X", "Y": "Y", "Z": "Z"},
-        survey_map={"ID": "ID", "AT": "AT", "AZ": "AZ", "DIP": "DIP"},
-        lith_map={"ID": "ID", "FROM": "FROM", "TO": "TO", "ROCK": "ROCK"},
+        collar_path,
+        survey_path,
+        table_path,
+        collar_map=collar_map,
+        survey_map=survey_map,
+        lith_map=table_map,
     )
-
     drillholes = engine.build_drillhole_model(drilldata)
 
-    # ============================================
-    # 4) Guardar estado en memoria y en Mongo
-    # ============================================
+    # Leer archivo Assay completo (todas las columnas se preservan automáticamente)
+    assay_df_full = pd.read_csv(assay_path)
+    
+    # Todas las columnas del Assay (incluyendo las opcionales)
+    assay_all_columns = list(assay_df_full.columns)
+    
+    # Variables numéricas del assay (SOLO leyes, excluyendo ID, FROM, TO)
+    # Obtener las columnas requeridas del mapeo para excluirlas
+    columnas_requeridas = list(assay_map.values())  # ["ID", "FROM", "TO"] según el mapeo del usuario
+    
+    # Filtrar: solo columnas numéricas que NO sean las requeridas
+    columnas_numericas = assay_df_full.select_dtypes(include=["number"]).columns.tolist()
+    assay_vars = [col for col in columnas_numericas if col not in columnas_requeridas]
+
+    # Preparar mapeos de columnas
+    columns_mapping = {
+        "collar": collar_map,
+        "survey": survey_map,
+        "table": table_map,
+        "assay": assay_map,
+    }
+    
+    # Preparar estado de archivos
     files_state = {
-        "collar_path": collar_std_path,
-        "survey_path": survey_std_path,
-        "lith_path": lith_std_path,
-        "assay_path": assay_std_path,
-    }
-    if dxf_path is not None:
-        files_state["dxf_path"] = dxf_path
-
-    state: Dict[str, Any] = {
-        "files": files_state,
-        "nombre_proyecto": nombre_proyecto,
-        "columns": detected,
-        "drillholes": drillholes,
-        "assay_variables": assay_std.select_dtypes(include=["number"]).columns.tolist(),
+        "collar_path": collar_path,
+        "survey_path": survey_path,
+        "table_path": table_path,
+        "assay_path": assay_path,
     }
 
-    if surface_points is not None:
-        state["surface_dxf"] = surface_points
+    # Verificar si existe DXF cargado previamente en /upload-files
+    dxf_path = os.path.join(carpeta_usuario, "surface.dxf")
+    surface_points = None
+    
+    if os.path.exists(dxf_path):
+        try:
+            surface_points = engine.load_dxf_surface(dxf_path)
+            files_state["dxf_path"] = dxf_path
+        except Exception as e:
+            # Si hay error al cargar DXF, continuar sin él
+            pass
 
-    # ---- Guardar proyecto en MongoDB ----
-    project_doc: Dict[str, Any] = {
+    # ---------------------------------------------------
+    # GUARDAR EN MONGODB
+    # ---------------------------------------------------
+    project_doc = {
         "user_id": ObjectId(current_user.id),
         "nombre_proyecto": nombre_proyecto,
         "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
         "files": files_state,
-        "columns": detected,
+        "columns": columns_mapping,
         "drillholes": drillholes,
-        "assay_variables": state["assay_variables"],
+        "assay_variables": assay_vars,
+        "assay_all_columns": assay_all_columns,
+        "assay_map": assay_map,
+        # NO guardamos assay_feature ni assay_render
     }
+    
     if surface_points is not None:
         project_doc["surface_dxf"] = surface_points
 
     result = projects_collection.insert_one(project_doc)
     project_id = str(result.inserted_id)
-
-    state["project_id"] = project_id
+    
+    # Guardar estado en memoria
+    state: Dict[str, Any] = {
+        "files": files_state,
+        "nombre_proyecto": nombre_proyecto,
+        "columns": columns_mapping,
+        "drillholes": drillholes,
+        "assay_variables": assay_vars,
+        "assay_all_columns": assay_all_columns,
+        "assay_map": assay_map,
+        "project_id": project_id,
+        "assay_feature": None,
+        "assay_render": None,
+    }
+    
+    if surface_points is not None:
+        state["surface_dxf"] = surface_points
+    
     current_state[project_id] = state
 
-    # ============================================
-    # 5) Respuesta
-    # ============================================
     return {
         "ok": True,
         "project_id": project_id,
-        "mapping_detected": detected,
-        "collar_headers": list(collar_df.columns),
-        "survey_headers": list(survey_df.columns),
-        "lith_headers": list(lith_df.columns),
-        "assay_headers": list(assay_df.columns),
-        "total_holes": len(drillholes),
-        "dxf_status": dxf_status,
+        "nombre_proyecto": nombre_proyecto,
+        "holes_classic": len(drillholes),
+        "holes_assay": len(drillholes),
+        "assay_variables": assay_vars,
+        "assay_all_columns": assay_all_columns,
+        "message": "Mapeo completado. Las columnas adicionales del Assay se preservan automáticamente.",
     }
+
+
+# =======================================================
+# 1) SUBIR ARCHIVOS + OBTENER CABECERAS (CON AUTENTICACIÓN)
+#    SOLO VALIDACIÓN INICIAL - NO PROCESA
+#    El procesamiento completo se realiza en /map-columns
+# =======================================================
+
+@app.post("/upload-files")
+async def upload_files(
+    collar: UploadFile = File(...),
+    survey: UploadFile = File(...),
+    table: UploadFile = File(...),
+    assay: UploadFile = File(...),
+    dxf: UploadFile | None = File(None),
+    nombre_proyecto: str = Form(...),
+    current_user: UserPublic = Depends(get_current_user),
+):
+    """
+    Endpoint para cargar archivos CSV (Collar, Survey, Table, Assay) y DXF opcional.
+    SOLO realiza validación inicial: guarda archivos y devuelve headers.
+    NO procesa, NO construye drillholes, NO guarda en BD.
+    
+    El procesamiento completo se realiza en /map-columns después de que el usuario
+    seleccione el mapeo de columnas y las variables del Assay con las que trabajar.
+    """
+    try:
+        # Carpeta por usuario (para guardar CSVs físicos)
+        user_folder = get_user_folder(current_user.id)
+
+        # Paths CSV (nombres simples)
+        collar_path = os.path.join(user_folder, "collar.csv")
+        survey_path = os.path.join(user_folder, "survey.csv")
+        table_path = os.path.join(user_folder, "table.csv")
+        assay_path = os.path.join(user_folder, "assay.csv")
+
+        # Guardar archivos originales CSV
+        with open(collar_path, "wb") as f:
+            f.write(await collar.read())
+        with open(survey_path, "wb") as f:
+            f.write(await survey.read())
+        with open(table_path, "wb") as f:
+            f.write(await table.read())
+        with open(assay_path, "wb") as f:
+            f.write(await assay.read())
+
+        # ------------------------------------
+        #   Guardar DXF si viene (opcional)
+        # ------------------------------------
+        dxf_path = None
+        dxf_status = None
+
+        if dxf is not None:
+            dxf_path = os.path.join(user_folder, "surface.dxf")
+            with open(dxf_path, "wb") as f:
+                f.write(await dxf.read())
+            
+            # Validar que el DXF se pueda leer (solo validación básica)
+            try:
+                engine = CoreLabEngine()
+                surface_points = engine.load_dxf_surface(dxf_path)
+                dxf_status = {
+                    "ok": True,
+                    "points": len(surface_points),
+                    "message": "DXF cargado y validado correctamente.",
+                }
+            except Exception as e:
+                dxf_status = {
+                    "ok": False,
+                    "error": f"Error al validar DXF: {str(e)}",
+                }
+
+        # Leer headers CSV para validación
+        collar_df = pd.read_csv(collar_path)
+        survey_df = pd.read_csv(survey_path)
+        table_df = pd.read_csv(table_path)
+        assay_df = pd.read_csv(assay_path)
+
+        # Guardar nombre_proyecto en archivo temporal para uso en /map-columns
+        proyecto_info_path = os.path.join(user_folder, "proyecto_info.json")
+        with open(proyecto_info_path, "w", encoding="utf-8") as f:
+            json.dump({"nombre_proyecto": nombre_proyecto}, f)
+
+        # ============================================
+        # SOLO VALIDACIÓN - NO PROCESAMIENTO
+        # ============================================
+        # Devolver headers para que el usuario pueda seleccionar el mapeo
+        return {
+            "ok": True,
+            "mensaje": "Archivos cargados y validados correctamente. Usa /map-columns para procesar.",
+            "nombre_proyecto": nombre_proyecto,
+            "Headers": {
+                "collar": list(collar_df.columns),
+                "survey": list(survey_df.columns),
+                "table": list(table_df.columns),
+                "assay": list(assay_df.columns),
+            },
+            "dxf_status": dxf_status,
+        }
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error al cargar archivos: {str(error)}"
+        )
 
 
 # =======================================================
@@ -313,39 +474,12 @@ def get_surface(project_id: str):
 # =======================================================
 # 2) SCHEMAS
 # =======================================================
-class CollarMap(BaseModel):
-    ID: str
-    X: str
-    Y: str
-    Z: str
-
-
-class SurveyMap(BaseModel):
-    ID: str
-    AT: str
-    AZ: str
-    DIP: str
-
-
-class LithMap(BaseModel):
-    ID: str
-    FROM: str
-    TO: str
-    ROCK: str
-
-
-class ColumnSelection(BaseModel):
-    collar: CollarMap
-    survey: SurveyMap
-    lith: LithMap
-
-
 class BlockModelRequest(BaseModel):
     composite_name: str
     block_size_x: float
     block_size_y: float
     block_size_z: float
-    padding: float = 20  # padding recomendado
+    padding: float = 20  
 
 
 class FeatureRequest(BaseModel):
@@ -720,6 +854,7 @@ def list_projects(current_user: UserPublic = Depends(get_current_user)):
         )
 
     return {"ok": True, "projects": projects}
+
 
 
 # =======================================================
